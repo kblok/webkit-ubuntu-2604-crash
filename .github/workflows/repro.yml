@@ -9,28 +9,33 @@ on:
         default: '5'
 
 jobs:
+  # Both images run in one job, so they share the same machine and CPU.
   repro:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        distro: [resolute, noble]
     steps:
       - uses: actions/checkout@v4
       - run: uname -m && grep -m1 'model name' /proc/cpuinfo
-      - run: docker build -f Dockerfile.microsoft --build-arg DISTRO=${{ matrix.distro }} -t repro .
+      - run: |
+          for distro in resolute noble; do
+            docker build -f Dockerfile.microsoft --build-arg DISTRO=$distro -t repro-$distro .
+          done
       - name: Run repro
         run: |
-          crashes=0
           runs=${{ inputs.runs || 5 }}
+          declare -A crashes=([resolute]=0 [noble]=0)
           for i in $(seq 1 "$runs"); do
-            docker run --rm --ipc=host -e DEBUG=pw:browser repro > "run-$i.log" 2>&1
-            grep -E '^(error|crashed|url)' "run-$i.log"
-            grep -q 'crashed=true' "run-$i.log" && crashes=$((crashes + 1))
+            for distro in resolute noble; do
+              log="$distro-run-$i.log"
+              docker run --rm --ipc=host -e DEBUG=pw:browser repro-$distro > "$log" 2>&1
+              echo "$distro run $i: $(grep -E '^(error|crashed)' "$log" | tr '\n' ' ')"
+              grep -q 'crashed=true' "$log" && crashes[$distro]=$((crashes[$distro] + 1))
+            done
           done
-          echo "${{ matrix.distro }}: $crashes of $runs runs crashed" | tee -a "$GITHUB_STEP_SUMMARY"
+          for distro in resolute noble; do
+            echo "$distro: ${crashes[$distro]} of $runs runs crashed" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: logs-${{ matrix.distro }}
-          path: run-*.log
+          name: logs
+          path: '*-run-*.log'
