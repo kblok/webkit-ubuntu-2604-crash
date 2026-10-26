@@ -1,0 +1,36 @@
+name: repro
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per image
+        default: '5'
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [resolute, noble]
+    steps:
+      - uses: actions/checkout@v4
+      - run: uname -m && grep -m1 'model name' /proc/cpuinfo
+      - run: docker build -f Dockerfile.microsoft --build-arg DISTRO=${{ matrix.distro }} -t repro .
+      - name: Run repro
+        run: |
+          crashes=0
+          runs=${{ inputs.runs || 5 }}
+          for i in $(seq 1 "$runs"); do
+            docker run --rm --ipc=host -e DEBUG=pw:browser repro > "run-$i.log" 2>&1
+            grep -E '^(error|crashed|url)' "run-$i.log"
+            grep -q 'crashed=true' "run-$i.log" && crashes=$((crashes + 1))
+          done
+          echo "${{ matrix.distro }}: $crashes of $runs runs crashed" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.distro }}
+          path: run-*.log
